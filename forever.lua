@@ -31,6 +31,15 @@ SlashCmdList["KRFOREVER"] = function(msg)
 	local function say(text)
 		print("|cffffcc00" .. ADDON_NAME .. ":|r " .. text)
 	end
+	local command, rest = strtrim(msg or ""):match("^(%S*)%s*(.-)$")
+	if command:lower() == "scan" then
+		if KnownRecipesForever.scanReport then
+			KnownRecipesForever.scanReport(say, strfind(rest, "|Hitem:", 1, true) and rest or nil)
+		else
+			say("the addon file itself did not load, so there is no scan")
+		end
+		return
+	end
 	if strtrim(msg or ""):lower() == "pet" then
 		if KnownRecipesForever.petReport then
 			KnownRecipesForever.petReport(say)
@@ -56,4 +65,5 @@ SlashCmdList["KRFOREVER"] = function(msg)
 		tostring(SlashCmdList and SlashCmdList.KNOWNRECIPES ~= nil)))
 	say("colours and the rest: /kr")
 	say("a warlock's demon and the spells kept for it: /krf pet")
+	say("what the addon reads from an item's tooltip: /krf scan (hover the item, or shift-click it in)")
 end

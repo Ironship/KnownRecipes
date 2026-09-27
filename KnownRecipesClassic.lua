@@ -305,6 +305,28 @@ local _G = _G
 		return UnitClass and select(2, UnitClass("player")) == "WARLOCK"
 	end
 
+	-- The warlock's own demons, by creature id: what Forever's summoning spells call up (SpellEffect
+	-- SUMMON_PET): Imp 416, Voidwalker 1860 and 276809, Felhunter 417, Succubus 1863, Incubus 185317,
+	-- Felguard 213450. An enslaved demon is another creature, and its spells (an NPC imp's Firebolt,
+	-- at whatever rank) must not make a grimoire look known.
+	local OWN_DEMONS = { [416] = true, [1860] = true, [276809] = true, [417] = true, [1863] = true,
+		[185317] = true, [213450] = true }
+
+	-- The pet's creature id, from its GUID ("Pet-0-4379-1-19-416-0200DF1B4A"), or nil when there is
+	-- no pet or the game keeps its GUID secret.
+	local function _petCreatureId()
+		local guid = UnitGUID and UnitGUID("pet")
+		if type(guid) ~= "string" or isSecret(guid) then return nil end
+		return tonumber(strmatch(guid, "^%a+%-%d+%-%d+%-%d+%-%d+%-(%d+)%-"))
+	end
+
+	-- true: one of the warlock's own demons is out; false: another creature; nil: the game does not say.
+	local function _ownDemonOut()
+		local npcId = _petCreatureId()
+		if not npcId then return nil end
+		return OWN_DEMONS[npcId] == true
+	end
+
 	-- This character's kept demon spells: { ids = { [spell id] = true }, ranks = { [name] = highest rank } }.
 	-- The first form of it, name -> rank alone, also kept the pet's commands and could keep a rank
 	-- too low; it is dropped, and read again the next time the demon is out.
@@ -325,7 +347,7 @@ local _G = _G
 	-- text can be empty while the game loads it) is taken from the spell itself.
 	local function _readPetSpells()
 		local book, petToken = _petSpellbook()
-		local kept = book and _isWarlock() and _petMemory()
+		local kept = book and _isWarlock() and _ownDemonOut() == true and _petMemory()
 		if kept then
 			for _, spell in ipairs(book) do
 				if spell.id then
@@ -345,7 +367,8 @@ local _G = _G
 	-- Does the demon know the spell a grimoire teaches? true and how, or false.
 	local function _petKnows(spellId)
 		local name, rank = _spellNameAndRank(spellId)
-		for _, spell in ipairs(_readPetSpells() or {}) do
+		local book = _ownDemonOut() ~= false and _readPetSpells() or nil -- not an enslaved demon's
+		for _, spell in ipairs(book or {}) do
 			if spell.id == spellId then
 				return true, spell.name .. "/" .. tostring(spell.subText)
 			elseif name and spell.name == name and _rankOf(spell.subText) >= rank then
@@ -816,6 +839,11 @@ local _G = _G
 		function KnownRecipesForever.petReport(say)
 			local book, petToken = _readPetSpells() -- keeps what it shows first, as a vendor would
 			say(string.format("pet spellbook: %s spells, pet type %s", book and #book or "no", tostring(petToken)))
+			local own = _ownDemonOut()
+			say(string.format("pet creature %s: %s", tostring(_petCreatureId()),
+				own == true and "the warlock's own demon, its spells are kept"
+				or own == false and "not a warlock's demon (enslaved?), its spells are not used"
+				or "the game does not say which, its spells are used but not kept"))
 			for i, spell in ipairs(book or {}) do
 				say(string.format("  %d. %s / %s / id %s", i, spell.name, tostring(spell.subText), tostring(spell.id)))
 			end
@@ -827,6 +855,60 @@ local _G = _G
 			table.sort(ids)
 			say("kept for this character: " .. (#ranks > 0 and table.concat(ranks, ", ") .. " (spells " .. table.concat(ids, ", ") .. ")"
 				or "nothing yet"))
+		end
+
+		-- /krf scan [item]: for a linked item, or the one under the mouse, what the scanning tooltip
+		-- reads (with the game's own line types, where C_TooltipInfo gives them), what the mount
+		-- journal says, and the answer. The last 20 are kept in KnownRecipesSettings.scans, so they
+		-- can be read after a /reload.
+		function KnownRecipesForever.scanReport(say, itemLink)
+			if not itemLink then
+				local ok, _, link = pcall(GameTooltip.GetItem, GameTooltip)
+				itemLink = ok and type(link) == "string" and not isSecret(link) and link or nil
+			end
+			if not itemLink then
+				say("scan: hover an item while typing the command, or shift-click it in: /krf scan [item]")
+				return
+			end
+			local entry = { link = itemLink, lines = {}, types = {} }
+			local itemId, _, _, _, _, classId, subclassId = C_Item.GetItemInfoInstant(itemLink)
+			entry.item, entry.class, entry.subclass = itemId, classId, subclassId
+			if itemId and C_MountJournal and C_MountJournal.GetMountFromItem then
+				entry.mount = C_MountJournal.GetMountFromItem(itemId)
+				if entry.mount then entry.mountCollected = select(11, C_MountJournal.GetMountInfoByID(entry.mount)) end
+			end
+			knownTable[itemLink] = nil -- asked afresh
+			local okKnown, known = pcall(_checkIfKnown, itemLink)
+			if okKnown then entry.known = known and true or false else entry.known = "error: " .. tostring(known) end
+			scantip:ClearLines()
+			scantip:SetHyperlink(itemLink)
+			for i = 1, scantip:NumLines() do
+				local text = _G["KnownRecipesScanTooltipTextLeft" .. i]:GetText()
+				entry.lines[i] = type(text) == "string" and not isSecret(text) and text or "(" .. type(text) .. ")"
+			end
+			if C_TooltipInfo and C_TooltipInfo.GetHyperlink then
+				local okInfo, data = pcall(C_TooltipInfo.GetHyperlink, itemLink)
+				if okInfo and type(data) == "table" and type(data.lines) == "table" then
+					for i, line in ipairs(data.lines) do
+						local lineType = type(line) == "table" and line.type
+						local text = type(line) == "table" and line.leftText
+						entry.types[i] = string.format("%s %s",
+							type(lineType) == "number" and not isSecret(lineType) and lineType or "?",
+							type(text) == "string" and not isSecret(text) and text or "")
+					end
+				end
+			end
+			if type(db.scans) ~= "table" then db.scans = {} end
+			table.insert(db.scans, entry)
+			while #db.scans > 20 do table.remove(db.scans, 1) end
+
+			say(string.format("scan: %s  item %s, class %s/%s", itemLink, tostring(itemId), tostring(classId), tostring(subclassId)))
+			if entry.mount then
+				say(string.format("  mount journal: mount %s, collected %s", tostring(entry.mount), tostring(entry.mountCollected)))
+			end
+			say("  known: " .. tostring(entry.known))
+			for i, text in ipairs(entry.lines) do say(string.format("  %d. %s", i, text)) end
+			say(string.format("  %d lines with the game's line types kept in the saved variables (%d scans)", #entry.types, #db.scans))
 		end
 	end
 
