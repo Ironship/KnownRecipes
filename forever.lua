@@ -42,8 +42,8 @@ SlashCmdList["KRFOREVER"] = function(msg)
 	local v, build, _, iface = GetBuildInfo()
 	say(string.format("client %s (%s), interface %s, WOW_PROJECT_ID=%s",
 		tostring(v), tostring(build), tostring(iface), tostring(WOW_PROJECT_ID)))
-	say(string.format("recognised as Forever: %s -- so the Classic reading of this game is on",
-		tostring(KnownRecipesForever.isForever)))
+	say(string.format("recognised as Forever: %s%s", tostring(KnownRecipesForever.isForever),
+		KnownRecipesForever.isForever and " -- so the Classic reading of this game is on" or ""))
 	say(string.format("collections on this client: PetJournal=%s MountJournal=%s Transmog=%s TooltipInfo=%s",
 		tostring(_G.C_PetJournal ~= nil), tostring(_G.C_MountJournal ~= nil),
 		tostring(_G.C_TransmogCollection ~= nil), tostring(_G.C_TooltipInfo ~= nil)))

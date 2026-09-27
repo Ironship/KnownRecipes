@@ -66,7 +66,7 @@ local _G = _G
 	-- this file loads, and every Vanilla path below hangs off this one local.
 	local isClassic = (KnownRecipesForever and KnownRecipesForever.isForever)
 		or (WOW_PROJECT_ID == WOW_PROJECT_CLASSIC)
-	local isBCClassic = WOW_PROJECT_ID == WOW_PROJECT_BURNING_CRUSADE_CLASSIC
+	local isBCClassic = WOW_PROJECT_BURNING_CRUSADE_CLASSIC ~= nil and WOW_PROJECT_ID == WOW_PROJECT_BURNING_CRUSADE_CLASSIC
 
 
 --[[----------------------------------------------------------------------------
@@ -444,19 +444,20 @@ local _G = _G
 					local _, numOwned = C_PetJournal.GetNumPets()
 					for i = 1, numOwned do
 						local _, _, owned, _, _, _, _, speciesName, icon, _, companionID = C_PetJournal.GetPetInfoByIndex(i)
-						if owned then
-							if itemIcon == icon and strmatch(itemName, speciesName) then
+						if owned and type(speciesName) == "string" then
+							if itemIcon == icon and strfind(itemName, speciesName, 1, true) then
 								Debug("%d - CompanionPet: (%d/%d) %s - CId: %d TId: %d", itemId, i, numOwned, speciesName, companionID, icon)
 								knownTable[itemLink] = true -- Mark as known for later use
 								return true -- CompanionPet is collected
-							elseif itemNameBrackets and strmatch(itemNameBrackets, speciesName) then -- Close enough match
+							elseif itemNameBrackets and strfind(itemNameBrackets, speciesName, 1, true) then -- Close enough match
 								Debug("%d - CompanionPet (Brackets): (%d/%d) %s (%s) - CId: %d TId: %d", itemId, i, numOwned, speciesName, itemNameBrackets, companionID, icon)
 								knownTable[itemLink] = true -- Mark as known for later use
 								return true -- CompanionPet is collected
 							end
 						end
 					end
-					return false -- CompanionPet is uncollected... or something went wrong
+					-- Not found by name and icon, which misses many a pet ("Tree Frog Box" has
+					-- another icon than its Tree Frog): the tooltip scan below decides.
 				end
 			end
 
@@ -489,10 +490,11 @@ local _G = _G
 					--Bandaid solution that is less than ideal:
 					--DevTools_Dump({ strmatch((GetItemInfo(itemId)), creatureName) })
 					--return (itemIcon == icon and strmatch((C_Item.GetItemInfo(itemId)), creatureName))
-					if (itemIcon == icon and strmatch(itemName, creatureName)) then
+					if type(creatureName) ~= "string" then -- nothing to compare
+					elseif (itemIcon == icon and strfind(itemName, creatureName, 1, true)) then
 						knownTable[itemLink] = true -- Mark as known for later use
 						return true -- CompanionPet is collected
-					elseif (itemNameBrackets and strmatch(itemNameBrackets, speciesName)) then -- Close enough match
+					elseif (itemNameBrackets and strfind(itemNameBrackets, creatureName, 1, true)) then -- Close enough match
 						knownTable[itemLink] = true -- Mark as known for later use
 						return true -- CompanionPet is collected
 					end
@@ -500,7 +502,21 @@ local _G = _G
 			end
 		end
 
-		if C_MountJournal and classId == Enum.ItemClass.Miscellaneous and subclassId == Enum.ItemMiscellaneousSubclass.Mount then -- Mount
+		-- Mounts: the journal says which mount an item teaches and whether it is collected. The guess
+		-- by name and icon below took Brown Wolf for Horn of the Swift Brown Wolf (one icon, and the
+		-- one name inside the other); it is left for a client without GetMountFromItem.
+		local mountID = itemId and classId == Enum.ItemClass.Miscellaneous and C_MountJournal and C_MountJournal.GetMountFromItem
+			and C_MountJournal.GetMountFromItem(itemId)
+		if mountID then
+			local isCollected = select(11, C_MountJournal.GetMountInfoByID(mountID))
+			if isCollected == true then
+				Debug("%d Mount: MId %d collected", itemId, mountID)
+				knownTable[itemLink] = true -- Mark as known for later use
+				return true -- Mount is collected
+			end
+			return false -- The journal has this mount, and not collected
+
+		elseif C_MountJournal and not C_MountJournal.GetMountFromItem and classId == Enum.ItemClass.Miscellaneous and subclassId == Enum.ItemMiscellaneousSubclass.Mount then -- Mount
 			local numMounts = C_MountJournal.GetNumMounts()
 			local itemName = C_Item.GetItemInfo(itemId)
 			if itemName then
@@ -523,7 +539,8 @@ local _G = _G
 		for i = 2, lines do -- Line 1 is always the name so you can skip it.
 			local text = _G["KnownRecipesScanTooltipTextLeft"..i]:GetText()
 
-			local lineResult = _checkTooltipLine(text, i, lines, itemId, itemLink)
+			-- A line with only right-hand text reads nil, and on Forever a line can be secret
+			local lineResult = type(text) == "string" and not isSecret(text) and _checkTooltipLine(text, i, lines, itemId, itemLink)
 			if lineResult == true then
 				knownTable[itemLink] = true -- Mark as known for later use
 				return true
@@ -768,6 +785,19 @@ local _G = _G
 			self:UnregisterEvent(event)
 		end
 	end
+
+	-- An addon that loads before this one can load the auction house or the guild bank itself; its
+	-- ADDON_LOADED has then gone by.
+	local isAddOnLoaded = C_AddOns and C_AddOns.IsAddOnLoaded or IsAddOnLoaded
+	if isAddOnLoaded then
+		for addOnName in pairs(needHooking) do
+			if needHooking[addOnName] and isAddOnLoaded(addOnName) then f:ADDON_LOADED("ADDON_LOADED", addOnName) end
+		end
+	end
+
+	-- A dropped profession takes its recipes with it: forget which items were found known.
+	f.SKILL_LINES_CHANGED = function() wipe(knownTable) end
+	f:RegisterEvent("SKILL_LINES_CHANGED")
 
 	-- A warlock's demon comes out, or learns a spell: keep what its spellbook shows.
 	if isClassic or isBCClassic then
